@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#08090b" />
+    <meta name="description" content="支持匀速滚动与 AI 语音跟读的浏览器提词器。" />
+    <meta property="og:title" content="FlowCue AI 提词器" />
+    <meta property="og:description" content="让讲稿自然跟上你的表达。" />
+    <meta property="og:type" content="website" />
+    <title>FlowCue AI 提词器</title>
+    <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <noscript>FlowCue 需要启用 JavaScript 才能工作。</noscript>
+
+    <main class="app-shell" id="appShell">
+      <aside class="control-panel" aria-label="提词器控制台">
+        <div class="brand-row">
+          <div class="brand"><span class="brand-mark" aria-hidden="true">F</span><span>FlowCue</span></div>
+          <button class="icon-btn panel-settings" id="settingsButton" aria-label="打开 AI 设置" title="AI 设置">•••</button>
+        </div>
+
+        <div class="panel-body">
+          <section class="control-section mode-section">
+            <p class="eyebrow">推进方式</p>
+            <div class="mode-switch" role="radiogroup" aria-label="滚动模式">
+              <button class="mode-btn active" data-mode="auto" role="radio" aria-checked="true">
+                <span class="mode-icon" aria-hidden="true">↧</span>匀速
+              </button>
+              <button class="mode-btn" data-mode="ai" role="radio" aria-checked="false">
+                <span class="mode-icon" aria-hidden="true">◉</span>AI 跟读
+              </button>
+            </div>
+          </section>
+
+          <section class="control-section mode-options" id="autoOptions">
+            <div class="label-row">
+              <label for="speedRange">滚动速度</label>
+              <output id="speedValue">240 字/分钟</output>
+            </div>
+            <input id="speedRange" class="range" type="range" min="60" max="600" step="10" value="240" />
+            <div class="range-labels"><span>从容</span><span>快速</span></div>
+          </section>
+
+          <section class="control-section mode-options hidden" id="aiOptions">
+            <div class="ai-card">
+              <span class="ai-orb" id="aiOrb" aria-hidden="true"></span>
+              <div>
+                <strong id="aiStateTitle">等待开始</strong>
+                <p id="aiStateDetail">每 5 秒识别并校准进度</p>
+              </div>
+            </div>
+            <button class="inline-action" id="openAiSettings">配置 API Key 与匹配策略 <span>→</span></button>
+          </section>
+
+          <section class="control-section script-summary">
+            <div class="label-row">
+              <span>当前讲稿</span>
+              <span id="scriptCount">0 字</span>
+            </div>
+            <button class="script-card" id="editScriptButton">
+              <span class="script-card-title" id="scriptTitle">未命名讲稿</span>
+              <span class="script-card-preview" id="scriptPreview">点击编辑讲稿</span>
+              <span class="script-card-edit">编辑</span>
+            </button>
+          </section>
+        </div>
+
+        <div class="panel-actions">
+          <button class="primary-btn" id="playButton">
+            <span class="play-symbol" aria-hidden="true">▶</span><span id="playLabel">开始提词</span>
+          </button>
+          <div class="secondary-actions">
+            <button class="ghost-btn" id="resetButton"><span aria-hidden="true">↺</span><span>回到开头</span></button>
+            <button class="icon-btn" id="fullscreenButton" aria-label="进入全屏" title="进入全屏">⛶</button>
+          </div>
+          <p class="key-hint"><kbd>空格</kbd> 开始/暂停 · <kbd>R</kbd> 重置</p>
+        </div>
+      </aside>
+
+      <section class="stage" id="stage" aria-label="提词区域">
+        <header class="stage-header">
+          <div class="live-status" id="liveStatus" role="status" aria-live="polite">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">准备就绪</span>
+          </div>
+          <div class="transcript-pill hidden" id="transcriptPill">
+            <span class="wave-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span id="transcriptText">正在聆听…</span>
+            <span class="confidence" id="confidenceText"></span>
+          </div>
+          <div class="stage-actions">
+            <button class="stage-action" id="stageEditButton">编辑讲稿</button>
+            <button class="stage-action mobile-settings" id="mobileSettingsButton">设置</button>
+          </div>
+        </header>
+
+        <div class="edge-fade top" aria-hidden="true"></div>
+        <div class="guide-line" aria-hidden="true"><span>当前句</span></div>
+        <article class="script-view" id="scriptView" tabindex="0" aria-label="讲稿，可上下滑动调整当前进度"></article>
+        <div class="edge-fade bottom" aria-hidden="true"></div>
+
+        <footer class="stage-footer">
+          <span id="progressLabel">0%</span>
+          <div class="progress-track" aria-hidden="true"><span id="progressFill"></span></div>
+          <span id="positionLabel">第 1 / 1 字</span>
+        </footer>
+      </section>
+    </main>
+
+    <dialog class="modal script-modal" id="scriptDialog">
+      <form method="dialog" class="modal-card" id="scriptForm">
+        <header class="modal-header">
+          <div><p class="eyebrow">讲稿</p><h2>编辑提词内容</h2></div>
+          <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <div class="modal-content">
+          <label class="field-label" for="titleInput">讲稿名称</label>
+          <input class="text-input" id="titleInput" maxlength="60" placeholder="例如：新品发布会开场" />
+          <div class="label-row textarea-label">
+            <label class="field-label" for="scriptInput">正文</label>
+            <span id="editorCount">0 字</span>
+          </div>
+          <textarea id="scriptInput" rows="14" placeholder="把讲稿粘贴到这里。建议使用自然段分隔内容……"></textarea>
+          <p class="field-help">内容只保存在当前设备的浏览器中，不会上传；AI 跟读时仅音频片段会发往硅基流动进行识别。</p>
+        </div>
+        <footer class="modal-footer">
+          <button class="text-btn" value="cancel">取消</button>
+          <button class="save-btn" id="saveScriptButton" value="default">保存并应用</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="modal settings-modal" id="settingsDialog">
+      <form method="dialog" class="modal-card" id="settingsForm">
+        <header class="modal-header">
+          <div><p class="eyebrow">AI 跟读</p><h2>识别与推进设置</h2></div>
+          <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <div class="modal-content settings-content">
+          <section class="settings-block">
+            <div class="settings-heading"><h3>硅基流动 API</h3><span class="secure-badge">浏览器直连</span></div>
+            <label class="field-label" for="apiKeyInput">API Key</label>
+            <div class="secret-input-wrap">
+              <input class="text-input" id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+              <button type="button" class="reveal-btn" id="revealKeyButton">显示</button>
+            </div>
+            <label class="check-row">
+              <input type="checkbox" id="rememberKeyInput" />
+              <span><strong>在此设备保存 Key</strong><small>不勾选时仅保留到本次浏览器会话结束</small></span>
+            </label>
+            <div class="privacy-note"><span aria-hidden="true">⌁</span><p>这是纯静态网页，无法替你隐藏密钥。Key 只会随音频请求发送到 <strong>api.siliconflow.cn</strong>，请勿在公共设备上保存。</p></div>
+            <label class="field-label" for="microphoneSelect">麦克风</label>
+            <select class="text-input" id="microphoneSelect"><option value="">系统默认麦克风</option></select>
+            <div class="model-row"><span>识别模型</span><code>XingChenAGI/XingChenASR-V3.2-Ultra</code></div>
+          </section>
+
+          <section class="settings-block">
+            <h3>推进策略</h3>
+            <div class="setting-range">
+              <div class="label-row"><label for="lookaheadRange">向前搜索范围</label><output id="lookaheadValue">260 字</output></div>
+              <input id="lookaheadRange" class="range" type="range" min="80" max="600" step="20" value="260" />
+              <p>只在当前位置之后的有限范围内找词，避免跳到远处的重复段落。</p>
+            </div>
+            <div class="setting-range">
+              <div class="label-row"><label for="fuzzyRange">最低匹配度</label><output id="fuzzyValue">72%</output></div>
+              <input id="fuzzyRange" class="range" type="range" min="50" max="92" step="1" value="72" />
+              <p>越高越谨慎；环境嘈杂或口语改动较多时可适当调低。</p>
+            </div>
+            <div class="setting-range">
+              <div class="label-row"><label for="chunkRange">识别间隔</label><output id="chunkValue">5 秒</output></div>
+              <input id="chunkRange" class="range" type="range" min="3" max="10" step="1" value="5" />
+              <p>间隔越短反馈越快，但请求次数也会更多。</p>
+            </div>
+          </section>
+        </div>
+        <footer class="modal-footer">
+          <button class="text-btn" value="cancel">取消</button>
+          <button class="save-btn" id="saveSettingsButton" value="default">保存设置</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
