@@ -7,6 +7,7 @@
   const SCRIPTS_KEY = 'flowcue:scripts:v1';
   const LOCAL_KEY = 'flowcue:api-key';
   const SESSION_KEY = 'flowcue:session-api-key';
+  const PWA_VERSION = '2026.08.26.1';
 
   const SAMPLE_SCRIPT = `让表达，自然发生。
 
@@ -97,6 +98,11 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     lineSpacingValue: $('#lineSpacingValue'),
     countdownRange: $('#countdownRange'),
     countdownValue: $('#countdownValue'),
+    pwaStatusBadge: $('#pwaStatusBadge'),
+    pwaHelpText: $('#pwaHelpText'),
+    installAppButton: $('#installAppButton'),
+    updateOfflineButton: $('#updateOfflineButton'),
+    clearOfflineButton: $('#clearOfflineButton'),
     toastStack: $('#toastStack'),
   };
 
@@ -128,6 +134,8 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   let segmentStartedAt = 0;
   let aiRunId = 0;
   let transcriptionQueue = Promise.resolve();
+  let serviceWorkerRegistration = null;
+  let deferredInstallPrompt = null;
 
   function loadState() {
     try {
@@ -1070,6 +1078,195 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     window.setTimeout(() => toast.remove(), 3800);
   }
 
+  function isStandaloneApp() {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  }
+
+  function setPwaStatus(message, type = 'ready') {
+    if (!elements.pwaStatusBadge) return;
+    elements.pwaStatusBadge.textContent = message;
+    elements.pwaStatusBadge.classList.toggle('offline', type === 'offline');
+    elements.pwaStatusBadge.classList.toggle('update', type === 'update');
+  }
+
+  function updatePwaStatus() {
+    if (!('serviceWorker' in navigator)) {
+      setPwaStatus('当前浏览器不支持', 'offline');
+      elements.pwaHelpText.textContent = '请使用最新版 Chrome、Edge 或 Safari，以启用安装和离线启动。';
+      return;
+    }
+    if (!serviceWorkerRegistration) {
+      setPwaStatus('正在准备离线文件');
+      return;
+    }
+    if (!navigator.onLine) {
+      setPwaStatus('当前离线 · 页面可用', 'offline');
+      elements.pwaHelpText.textContent = '讲稿编辑和匀速提词可离线使用；AI 语音识别需要恢复网络。';
+      return;
+    }
+    if (serviceWorkerRegistration.waiting) {
+      setPwaStatus('发现新版本', 'update');
+      elements.pwaHelpText.textContent = '点击“检查并同步更新”，把新页面文件保存到离线缓存。';
+      return;
+    }
+    if (isStandaloneApp()) {
+      setPwaStatus(`已安装 · v${PWA_VERSION}`);
+      elements.pwaHelpText.textContent = '当前正以独立应用模式运行，页面文件也已可供离线使用。';
+      return;
+    }
+    setPwaStatus(`离线文件已就绪 · v${PWA_VERSION}`);
+    elements.pwaHelpText.textContent = '可安装到桌面或主屏幕；AI 跟读功能仍然需要网络。';
+  }
+
+  function sendServiceWorkerMessage(message, timeout = 15000, workerOverride = null) {
+    const worker = workerOverride
+      || serviceWorkerRegistration?.active
+      || serviceWorkerRegistration?.waiting
+      || navigator.serviceWorker?.controller;
+    if (!worker) return Promise.reject(new Error('NO_ACTIVE_WORKER'));
+
+    return new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const timer = window.setTimeout(() => reject(new Error('WORKER_TIMEOUT')), timeout);
+      channel.port1.onmessage = (event) => {
+        clearTimeout(timer);
+        if (event.data?.ok === false) reject(new Error(event.data.error || 'WORKER_ERROR'));
+        else resolve(event.data || { ok: true });
+      };
+      worker.postMessage(message, [channel.port2]);
+    });
+  }
+
+  function waitForWorkerActivation(worker, timeout = 10000) {
+    if (!worker || worker.state === 'activated') return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(resolve, timeout);
+      worker.addEventListener('statechange', () => {
+        if (worker.state === 'activated' || worker.state === 'redundant') {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+  }
+
+  async function registerPwa() {
+    if (!('serviceWorker' in navigator)) {
+      updatePwaStatus();
+      return;
+    }
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (location.protocol !== 'https:' && !isLocalhost) {
+      setPwaStatus('需要 HTTPS', 'offline');
+      elements.pwaHelpText.textContent = 'PWA 离线缓存需要通过 GitHub Pages 的 HTTPS 地址或本机服务打开。';
+      return;
+    }
+
+    try {
+      serviceWorkerRegistration = await navigator.serviceWorker.register('./service-worker.js', {
+        scope: './',
+        updateViaCache: 'none',
+      });
+      serviceWorkerRegistration.addEventListener('updatefound', () => {
+        const installing = serviceWorkerRegistration.installing;
+        if (!installing) return;
+        setPwaStatus('正在同步页面文件', 'update');
+        installing.addEventListener('statechange', () => {
+          if (installing.state === 'activated') updatePwaStatus();
+        });
+      });
+      await navigator.serviceWorker.ready;
+      updatePwaStatus();
+    } catch {
+      setPwaStatus('离线缓存未启用', 'offline');
+      elements.pwaHelpText.textContent = '页面文件缓存失败，请在线刷新一次；这不会影响普通提词功能。';
+    }
+  }
+
+  async function installApp() {
+    if (isStandaloneApp()) {
+      showToast('FlowCue 已经以应用模式运行。');
+      return;
+    }
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      if (choice.outcome === 'accepted') showToast('FlowCue 正在安装。');
+      else showToast('已取消安装，你可以稍后再试。');
+      updatePwaStatus();
+      return;
+    }
+
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    showToast(isIos
+      ? '请点击 Safari 的“分享”，再选择“添加到主屏幕”。'
+      : '如未出现安装提示，请从浏览器菜单中选择“安装应用”或“添加到主屏幕”。');
+  }
+
+  async function refreshOfflineFiles() {
+    if (!serviceWorkerRegistration) {
+      showToast('离线缓存尚未就绪，请在线刷新页面后再试。', 'error');
+      return;
+    }
+    const button = elements.updateOfflineButton;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = '正在同步…';
+    setPwaStatus('正在同步页面文件', 'update');
+    try {
+      await serviceWorkerRegistration.update();
+      const updatingWorker = serviceWorkerRegistration.installing || serviceWorkerRegistration.waiting;
+      if (updatingWorker) {
+        if (updatingWorker.state === 'installed') {
+          await sendServiceWorkerMessage({ type: 'SKIP_WAITING' }, 5000, updatingWorker);
+        }
+        await waitForWorkerActivation(updatingWorker);
+      }
+      serviceWorkerRegistration = await navigator.serviceWorker.ready;
+      await sendServiceWorkerMessage({ type: 'REFRESH_CACHE' }, 30000);
+      setPwaStatus(`已同步 · v${PWA_VERSION}`);
+      elements.pwaHelpText.textContent = '最新页面文件已保存，下次打开或刷新页面时生效。';
+      showToast('页面文件已同步，讲稿和 API Key 没有被改动。');
+    } catch {
+      updatePwaStatus();
+      showToast('同步失败，请检查网络后重试；现有离线版本仍然保留。', 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
+
+  async function clearOfflineFiles() {
+    if (!serviceWorkerRegistration) {
+      showToast('当前没有可清除的页面缓存。', 'error');
+      return;
+    }
+    if (!navigator.onLine) {
+      showToast('离线时不能清空页面缓存，否则应用将无法重新载入。', 'error');
+      return;
+    }
+    const confirmed = window.confirm('清空页面文件缓存并重新载入？讲稿、进度和 API Key 不会被删除。');
+    if (!confirmed) return;
+
+    const button = elements.clearOfflineButton;
+    button.disabled = true;
+    button.textContent = '正在清空…';
+    try {
+      const probeUrl = new URL('./service-worker.js', location.href);
+      probeUrl.searchParams.set('__network', String(Date.now()));
+      const probe = await fetch(probeUrl, { cache: 'no-store' });
+      if (!probe.ok) throw new Error('NETWORK_UNAVAILABLE');
+      await sendServiceWorkerMessage({ type: 'CLEAR_CACHES' });
+      showToast('页面缓存已清空，正在重新载入最新版本。');
+      window.setTimeout(() => location.reload(), 350);
+    } catch {
+      button.disabled = false;
+      button.textContent = '清空页面缓存';
+      showToast('无法确认网络可用，因此没有清空现有离线文件。', 'error');
+    }
+  }
+
   function closeOnBackdrop(dialog) {
     dialog.addEventListener('click', (event) => {
       if (event.target === dialog) dialog.close();
@@ -1098,6 +1295,9 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.newScriptButton.addEventListener('click', createScript);
     elements.scriptSelect.addEventListener('change', () => switchScript(elements.scriptSelect.value));
     elements.deleteScriptButton.addEventListener('click', deleteActiveScript);
+    elements.installAppButton.addEventListener('click', installApp);
+    elements.updateOfflineButton.addEventListener('click', refreshOfflineFiles);
+    elements.clearOfflineButton.addEventListener('click', clearOfflineFiles);
     elements.scriptForm.addEventListener('submit', saveScript);
     elements.settingsForm.addEventListener('submit', saveSettings);
     elements.scriptInput.addEventListener('input', () => {
@@ -1148,6 +1348,20 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && isRunning) requestWakeLock();
     });
+    window.addEventListener('beforeinstallprompt', (event) => {
+      event.preventDefault();
+      deferredInstallPrompt = event;
+      setPwaStatus('可以安装到设备');
+      elements.pwaHelpText.textContent = '点击“安装 FlowCue”，即可从桌面或主屏幕直接启动。';
+    });
+    window.addEventListener('appinstalled', () => {
+      deferredInstallPrompt = null;
+      setPwaStatus(`已安装 · v${PWA_VERSION}`);
+      showToast('FlowCue 已安装到设备。');
+    });
+    window.addEventListener('online', updatePwaStatus);
+    window.addEventListener('offline', updatePwaStatus);
+    navigator.serviceWorker?.addEventListener('controllerchange', updatePwaStatus);
     window.addEventListener('beforeunload', () => {
       stopMediaTracks();
       releaseWakeLock();
@@ -1166,6 +1380,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     bindEvents();
     setMode(state.mode);
     refreshMicrophones();
+    registerPwa();
   }
 
   initialize();

@@ -9,7 +9,12 @@
     <meta property="og:description" content="让讲稿自然跟上你的表达。" />
     <meta property="og:type" content="website" />
     <title>FlowCue AI 提词器</title>
-    <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="FlowCue" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -198,6 +203,20 @@
               <input id="lineSpacingRange" class="range" type="range" min="0.5" max="2.4" step="0.05" value="1.55" />
               <p>调整两行文本之间的垂直距离，数值越大间距越宽，演讲时留白更从容。</p>
             </div>
+          </section>
+
+          <section class="settings-block display-block app-block">
+            <div class="settings-heading">
+              <h3>应用与离线</h3>
+              <span class="secure-badge" id="pwaStatusBadge">正在准备离线文件</span>
+            </div>
+            <p class="app-block-copy">首次在线打开后，FlowCue 会缓存页面文件；之后即使没有网络，也能编辑讲稿并使用匀速提词。AI 跟读仍需要网络。</p>
+            <div class="app-actions">
+              <button class="text-btn app-action-primary" id="installAppButton" type="button">安装 FlowCue</button>
+              <button class="text-btn" id="updateOfflineButton" type="button">检查并同步更新</button>
+              <button class="text-btn danger-btn" id="clearOfflineButton" type="button">清空页面缓存</button>
+            </div>
+            <p class="app-block-help" id="pwaHelpText">安装后可从桌面或主屏幕直接启动，显示效果接近独立应用。</p>
           </section>
         </div>
         <footer class="modal-footer">
