@@ -4,6 +4,7 @@
   const API_URL = 'https://api.siliconflow.cn/v1/audio/transcriptions';
   const MODEL = 'XingChenAGI/XingChenASR-V3.2-Ultra';
   const STORAGE_KEY = 'flowcue:state:v1';
+  const SCRIPTS_KEY = 'flowcue:scripts:v1';
   const LOCAL_KEY = 'flowcue:api-key';
   const SESSION_KEY = 'flowcue:session-api-key';
 
@@ -33,6 +34,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       lookahead: 260,
       fuzzy: 72,
       chunkSeconds: 5,
+      lineSpacing: 1.55,
       microphoneId: '',
       rememberKey: false,
     },
@@ -41,6 +43,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const genId = () => `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
   const elements = {
     modeButtons: $$('.mode-btn'),
@@ -56,6 +59,9 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     resetButton: $('#resetButton'),
     fullscreenButton: $('#fullscreenButton'),
     scriptView: $('#scriptView'),
+    scriptSelect: $('#scriptSelect'),
+    newScriptButton: $('#newScriptButton'),
+    deleteScriptButton: $('#deleteScriptButton'),
     progressFill: $('#progressFill'),
     progressLabel: $('#progressLabel'),
     positionLabel: $('#positionLabel'),
@@ -84,10 +90,13 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     fuzzyValue: $('#fuzzyValue'),
     chunkRange: $('#chunkRange'),
     chunkValue: $('#chunkValue'),
+    lineSpacingRange: $('#lineSpacingRange'),
+    lineSpacingValue: $('#lineSpacingValue'),
     toastStack: $('#toastStack'),
   };
 
   let state = loadState();
+  let scripts = [];
   let apiKey = readApiKey();
   let isRunning = false;
   let animationFrame = 0;
@@ -143,6 +152,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     saveDebounce = window.setTimeout(() => {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          scriptId: state.scriptId,
           title: state.title,
           script: state.script,
           mode: state.mode,
@@ -154,6 +164,110 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
         // The app still works if storage is unavailable.
       }
     }, 180);
+  }
+
+  function loadScripts() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SCRIPTS_KEY) || 'null');
+      if (Array.isArray(raw)) {
+        return raw
+          .filter((s) => s && typeof s === 'object' && typeof s.script === 'string')
+          .map((s) => ({ id: s.id || genId(), title: s.title || '未命名讲稿', script: s.script }));
+      }
+    } catch {
+      // fall through to empty
+    }
+    return [];
+  }
+
+  function persistScripts() {
+    try {
+      localStorage.setItem(SCRIPTS_KEY, JSON.stringify(scripts));
+    } catch {
+      // The app still works if storage is unavailable.
+    }
+  }
+
+  function ensureScripts() {
+    scripts = loadScripts();
+    if (!scripts.length) {
+      const legacy = { title: state.title, script: state.script };
+      const seed = (legacy.script && legacy.script.trim())
+        ? legacy
+        : { title: defaults.title, script: SAMPLE_SCRIPT };
+      scripts = [{ id: genId(), title: seed.title || defaults.title, script: seed.script || SAMPLE_SCRIPT }];
+      persistScripts();
+    }
+    const activeId = scripts.some((s) => s.id === state.scriptId) ? state.scriptId : scripts[0].id;
+    const active = scripts.find((s) => s.id === activeId) || scripts[0];
+    state.scriptId = active.id;
+    state.title = active.title;
+    state.script = active.script;
+  }
+
+  function renderScriptSelect() {
+    const select = elements.scriptSelect;
+    select.replaceChildren();
+    scripts.forEach((s) => {
+      select.add(new Option(s.title || '未命名讲稿', s.id));
+    });
+    select.value = scripts.some((s) => s.id === state.scriptId) ? state.scriptId : '';
+    elements.deleteScriptButton.disabled = !state.scriptId;
+  }
+
+  function switchScript(scriptId) {
+    const target = scripts.find((s) => s.id === scriptId);
+    if (!target || target.id === state.scriptId) return;
+    state.scriptId = target.id;
+    state.title = target.title;
+    state.script = target.script;
+    state.progress = 0;
+    persistStateSoon();
+    renderScript();
+    renderScriptSelect();
+    showToast(`已切换到「${target.title || '未命名讲稿'}」。`);
+  }
+
+  function createScript() {
+    const scriptObj = { id: genId(), title: '未命名讲稿', script: '' };
+    scripts.unshift(scriptObj);
+    state.scriptId = scriptObj.id;
+    state.title = scriptObj.title;
+    state.script = scriptObj.script;
+    state.progress = 0;
+    persistScripts();
+    persistStateSoon();
+    renderScript();
+    renderScriptSelect();
+    openScriptEditor();
+    showToast('已新建讲稿，填入内容后点击「保存并应用」。');
+  }
+
+  function deleteActiveScript() {
+    if (!state.scriptId) return;
+    const target = scripts.find((s) => s.id === state.scriptId);
+    if (!target) return;
+    const confirmed = window.confirm(`确定删除讲稿「${target.title || '未命名讲稿'}」吗？此操作无法撤销。`);
+    if (!confirmed) return;
+
+    scripts = scripts.filter((s) => s.id !== state.scriptId);
+    if (scripts.length) {
+      const next = scripts[0];
+      state.scriptId = next.id;
+      state.title = next.title;
+      state.script = next.script;
+    } else {
+      state.scriptId = '';
+      state.title = '未命名讲稿';
+      state.script = '';
+    }
+    state.progress = 0;
+    persistScripts();
+    persistStateSoon();
+    renderScript();
+    renderScriptSelect();
+    elements.scriptDialog.close();
+    showToast(scripts.length ? '讲稿已删除，已切换到下一份。' : '讲稿已删除。', 'success');
   }
 
   function persistApiKey() {
@@ -772,6 +886,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.lookaheadRange.value = String(state.settings.lookahead);
     elements.fuzzyRange.value = String(state.settings.fuzzy);
     elements.chunkRange.value = String(state.settings.chunkSeconds);
+    elements.lineSpacingRange.value = String(state.settings.lineSpacing);
     elements.microphoneSelect.value = state.settings.microphoneId;
     syncSettingsOutputs();
     elements.settingsDialog.showModal();
@@ -790,7 +905,19 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     state.title = elements.titleInput.value.trim() || '未命名讲稿';
     state.script = nextScript;
     state.progress = 0;
+
+    const index = scripts.findIndex((s) => s.id === state.scriptId);
+    if (index >= 0) {
+      scripts[index].title = state.title;
+      scripts[index].script = state.script;
+    } else {
+      scripts.unshift({ id: genId(), title: state.title, script: state.script });
+      state.scriptId = scripts[0].id;
+    }
+    persistScripts();
+
     renderScript();
+    renderScriptSelect();
     persistStateSoon();
     elements.scriptDialog.close();
     showToast('讲稿已更新，并回到开头。');
@@ -804,9 +931,12 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     state.settings.lookahead = Number(elements.lookaheadRange.value);
     state.settings.fuzzy = Number(elements.fuzzyRange.value);
     state.settings.chunkSeconds = Number(elements.chunkRange.value);
+    state.settings.lineSpacing = Number(elements.lineSpacingRange.value);
     state.settings.microphoneId = elements.microphoneSelect.value;
     persistApiKey();
     persistStateSoon();
+    applyLineSpacing();
+    requestAnimationFrame(() => scrollToProgress(state.progress, 'auto'));
     elements.settingsDialog.close();
     elements.aiStateDetail.textContent = `每 ${state.settings.chunkSeconds} 秒识别并校准进度`;
     showToast(apiKey ? 'AI 跟读设置已保存。' : '设置已保存；开始跟读前还需填写 API Key。');
@@ -816,7 +946,12 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.lookaheadValue.textContent = `${elements.lookaheadRange.value} 字`;
     elements.fuzzyValue.textContent = `${elements.fuzzyRange.value}%`;
     elements.chunkValue.textContent = `${elements.chunkRange.value} 秒`;
-    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange].forEach(updateRange);
+    elements.lineSpacingValue.textContent = elements.lineSpacingRange.value;
+    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange, elements.lineSpacingRange].forEach(updateRange);
+  }
+
+  function applyLineSpacing() {
+    document.documentElement.style.setProperty('--script-line-height', String(state.settings.lineSpacing));
   }
 
   function resetToStart() {
@@ -865,6 +1000,9 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     $('#mobileSettingsButton').addEventListener('click', openSettings);
     $('#editScriptButton').addEventListener('click', openScriptEditor);
     $('#stageEditButton').addEventListener('click', openScriptEditor);
+    elements.newScriptButton.addEventListener('click', createScript);
+    elements.scriptSelect.addEventListener('change', () => switchScript(elements.scriptSelect.value));
+    elements.deleteScriptButton.addEventListener('click', deleteActiveScript);
     elements.scriptForm.addEventListener('submit', saveScript);
     elements.settingsForm.addEventListener('submit', saveSettings);
     elements.scriptInput.addEventListener('input', () => {
@@ -875,7 +1013,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       elements.apiKeyInput.type = showing ? 'password' : 'text';
       elements.revealKeyButton.textContent = showing ? '显示' : '隐藏';
     });
-    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange].forEach((range) => {
+    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange, elements.lineSpacingRange].forEach((range) => {
       range.addEventListener('input', syncSettingsOutputs);
     });
     closeOnBackdrop(elements.scriptDialog);
@@ -926,7 +1064,10 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.speedValue.textContent = `${state.speed} 字/分钟`;
     updateRange(elements.speedRange);
     elements.aiStateDetail.textContent = `每 ${state.settings.chunkSeconds} 秒识别并校准进度`;
+    applyLineSpacing();
+    ensureScripts();
     renderScript();
+    renderScriptSelect();
     bindEvents();
     setMode(state.mode);
     refreshMicrophones();

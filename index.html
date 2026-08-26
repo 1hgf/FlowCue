@@ -57,9 +57,16 @@
 
           <section class="control-section script-summary">
             <div class="label-row">
-              <span>当前讲稿</span>
-              <span id="scriptCount">0 字</span>
+              <span>讲稿管理</span>
+              <div class="label-actions">
+                <span id="scriptCount">0 字</span>
+                <button class="new-script-btn" id="newScriptButton" aria-label="新建讲稿" title="新建讲稿">＋ 新建讲稿</button>
+              </div>
             </div>
+            <label class="script-select-wrap" for="scriptSelect">
+              <select id="scriptSelect" class="script-select" aria-label="切换讲稿"></select>
+              <span class="script-select-caret" aria-hidden="true">▾</span>
+            </label>
             <button class="script-card" id="editScriptButton">
               <span class="script-card-title" id="scriptTitle">未命名讲稿</span>
               <span class="script-card-preview" id="scriptPreview">点击编辑讲稿</span>
@@ -127,6 +134,7 @@
           <p class="field-help">内容只保存在当前设备的浏览器中，不会上传；AI 跟读时仅音频片段会发往硅基流动进行识别。</p>
         </div>
         <footer class="modal-footer">
+          <button class="text-btn danger-btn" id="deleteScriptButton" type="button">删除讲稿</button>
           <button class="text-btn" value="cancel">取消</button>
           <button class="save-btn" id="saveScriptButton" value="default">保存并应用</button>
         </footer>
@@ -173,6 +181,15 @@
               <div class="label-row"><label for="chunkRange">识别间隔</label><output id="chunkValue">5 秒</output></div>
               <input id="chunkRange" class="range" type="range" min="3" max="10" step="1" value="5" />
               <p>间隔越短反馈越快，但请求次数也会更多。</p>
+            </div>
+          </section>
+
+          <section class="settings-block display-block">
+            <h3>显示</h3>
+            <div class="setting-range">
+              <div class="label-row"><label for="lineSpacingRange">行间距</label><output id="lineSpacingValue">1.55</output></div>
+              <input id="lineSpacingRange" class="range" type="range" min="0.5" max="2.4" step="0.05" value="1.55" />
+              <p>调整两行文本之间的垂直距离，数值越大间距越宽，演讲时留白更从容。</p>
             </div>
           </section>
         </div>
