@@ -101,6 +101,7 @@
           <div class="stage-actions">
             <button class="stage-action" id="stageEditButton">编辑讲稿</button>
             <button class="stage-action mobile-settings" id="mobileSettingsButton">设置</button>
+            <button class="stage-action fs-exit" id="exitFullscreenButton" aria-label="退出全屏" title="退出全屏">退出全屏</button>
           </div>
         </header>
 
@@ -110,6 +111,7 @@
         <div class="edge-fade bottom" aria-hidden="true"></div>
 
         <footer class="stage-footer">
+          <button class="footer-pause" id="pauseButton" aria-label="暂停/继续" title="继续">▶</button>
           <span id="progressLabel">0%</span>
           <div class="progress-track" aria-hidden="true"><span id="progressFill"></span></div>
           <span id="positionLabel">第 1 / 1 字</span>
@@ -181,6 +183,11 @@
               <div class="label-row"><label for="chunkRange">识别间隔</label><output id="chunkValue">5 秒</output></div>
               <input id="chunkRange" class="range" type="range" min="3" max="10" step="1" value="5" />
               <p>间隔越短反馈越快，但请求次数也会更多。</p>
+            </div>
+            <div class="setting-range">
+              <div class="label-row"><label for="countdownRange">开始倒计时</label><output id="countdownValue">3 秒</output></div>
+              <input id="countdownRange" class="range" type="range" min="0" max="30" step="1" value="3" />
+              <p>点击「开始提词」后先倒计时再滚动；设为 0 秒可跳过倒计时。</p>
             </div>
           </section>
 

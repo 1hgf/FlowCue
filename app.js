@@ -35,6 +35,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       fuzzy: 72,
       chunkSeconds: 5,
       lineSpacing: 1.55,
+      countdownSeconds: 3,
       microphoneId: '',
       rememberKey: false,
     },
@@ -62,6 +63,8 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     scriptSelect: $('#scriptSelect'),
     newScriptButton: $('#newScriptButton'),
     deleteScriptButton: $('#deleteScriptButton'),
+    pauseButton: $('#pauseButton'),
+    exitFullscreenButton: $('#exitFullscreenButton'),
     progressFill: $('#progressFill'),
     progressLabel: $('#progressLabel'),
     positionLabel: $('#positionLabel'),
@@ -92,6 +95,8 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     chunkValue: $('#chunkValue'),
     lineSpacingRange: $('#lineSpacingRange'),
     lineSpacingValue: $('#lineSpacingValue'),
+    countdownRange: $('#countdownRange'),
+    countdownValue: $('#countdownValue'),
     toastStack: $('#toastStack'),
   };
 
@@ -100,6 +105,10 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   let apiKey = readApiKey();
   let isRunning = false;
   let animationFrame = 0;
+  let countdownActive = false;
+  let countdownTimer = 0;
+  let countdownDuration = 0;
+  let countdownStartedAt = 0;
   let lastFrameTime = 0;
   let autoNormalizedPosition = 0;
   let normalizedScript = { text: '', map: [] };
@@ -218,6 +227,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   function switchScript(scriptId) {
     const target = scripts.find((s) => s.id === scriptId);
     if (!target || target.id === state.scriptId) return;
+    if (countdownActive) cancelCountdown('已切换讲稿');
     state.scriptId = target.id;
     state.title = target.title;
     state.script = target.script;
@@ -229,6 +239,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   }
 
   function createScript() {
+    if (countdownActive) cancelCountdown('已取消倒计时');
     const scriptObj = { id: genId(), title: '未命名讲稿', script: '' };
     scripts.unshift(scriptObj);
     state.scriptId = scriptObj.id;
@@ -245,6 +256,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
 
   function deleteActiveScript() {
     if (!state.scriptId) return;
+    if (countdownActive) cancelCountdown('已取消倒计时');
     const target = scripts.find((s) => s.id === state.scriptId);
     if (!target) return;
     const confirmed = window.confirm(`确定删除讲稿「${target.title || '未命名讲稿'}」吗？此操作无法撤销。`);
@@ -435,6 +447,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   }
 
   function syncProgressFromScroll() {
+    if (countdownActive) return;
     if (!allSpans.length) return;
     const rect = elements.scriptView.getBoundingClientRect();
     const guideY = rect.top + rect.height * (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--guide-y')) / 100 || 0.42);
@@ -459,6 +472,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
 
   function setMode(mode) {
     if (!['auto', 'ai'].includes(mode)) return;
+    if (countdownActive) cancelCountdown('模式已切换');
     if (isRunning) stopRunning('模式已切换');
     state.mode = mode;
     elements.modeButtons.forEach((button) => {
@@ -479,13 +493,22 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.statusDot.classList.toggle('error', type === 'error');
   }
 
-  function updateRunningUi(running) {
+  function updateRunningUi() {
+    const running = isRunning;
+    const counting = countdownActive;
     elements.playButton.classList.toggle('running', running);
-    elements.playButton.querySelector('.play-symbol').textContent = running ? 'Ⅱ' : '▶';
+    elements.playButton.querySelector('.play-symbol').textContent = running || counting ? 'Ⅱ' : '▶';
     elements.playLabel.textContent = running
       ? (state.mode === 'ai' ? '停止跟读' : '暂停提词')
-      : (state.mode === 'ai' ? '开始跟读' : '开始提词');
+      : counting
+        ? '取消倒计时'
+        : (state.mode === 'ai' ? '开始跟读' : '开始提词');
     elements.aiOrb.classList.toggle('listening', running && state.mode === 'ai');
+    elements.pauseButton.classList.toggle('active', running);
+    elements.pauseButton.classList.toggle('counting', counting);
+    elements.pauseButton.textContent = running || counting ? 'Ⅱ' : '▶';
+    elements.pauseButton.title = running ? '暂停' : counting ? '取消倒计时' : '继续';
+    elements.pauseButton.setAttribute('aria-label', running ? '暂停' : counting ? '取消倒计时' : '继续');
   }
 
   async function toggleRunning() {
@@ -493,20 +516,82 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       stopRunning('已暂停');
       return;
     }
+    if (countdownActive) {
+      cancelCountdown('已取消倒计时');
+      return;
+    }
     if (!state.script.trim()) {
       showToast('请先添加讲稿。', 'error');
       openScriptEditor();
       return;
     }
-    if (state.mode === 'ai') await startAiFollowing();
+    beginCountdown();
+  }
+
+  function beginCountdown() {
+    const seconds = clamp(Math.round(Number(state.settings.countdownSeconds) || 0), 0, 30);
+    if (seconds <= 0) {
+      startActual();
+      return;
+    }
+    countdownActive = true;
+    countdownDuration = seconds * 1000;
+    countdownStartedAt = performance.now();
+    updateCountdownUi(100);
+    updateRunningUi();
+    setStatus(`倒计时 ${seconds} 秒后开始`, 'running');
+    elements.positionLabel.textContent = '准备开始';
+    countdownTimer = requestAnimationFrame(countdownTick);
+  }
+
+  function countdownTick(now) {
+    if (!countdownActive) return;
+    const remaining = Math.max(0, countdownDuration - (now - countdownStartedAt));
+    updateCountdownUi(countdownDuration > 0 ? (remaining / countdownDuration) * 100 : 0);
+    if (remaining <= 0) {
+      startActual();
+      return;
+    }
+    countdownTimer = requestAnimationFrame(countdownTick);
+  }
+
+  function updateCountdownUi(percent) {
+    elements.progressFill.classList.add('counting');
+    elements.progressFill.style.width = `${percent.toFixed(2)}%`;
+    elements.progressLabel.textContent = `${Math.round(percent)}%`;
+  }
+
+  function clearCountdownUi() {
+    elements.progressFill.classList.remove('counting');
+    const percent = state.script.length > 1 ? (state.progress / (state.script.length - 1)) * 100 : 0;
+    elements.progressFill.style.width = `${percent.toFixed(2)}%`;
+    elements.progressLabel.textContent = `${Math.round(percent)}%`;
+    elements.positionLabel.textContent = `第 ${Math.min(state.progress + 1, state.script.length)} / ${state.script.length} 字`;
+  }
+
+  function startActual() {
+    countdownActive = false;
+    cancelAnimationFrame(countdownTimer);
+    clearCountdownUi();
+    updateRunningUi();
+    if (state.mode === 'ai') startAiFollowing();
     else startAutoScroll();
+  }
+
+  function cancelCountdown(status = '已取消倒计时') {
+    if (!countdownActive) return;
+    countdownActive = false;
+    cancelAnimationFrame(countdownTimer);
+    clearCountdownUi();
+    updateRunningUi();
+    setStatus(status);
   }
 
   function startAutoScroll() {
     isRunning = true;
     autoNormalizedPosition = originalToNormalized(state.progress);
     lastFrameTime = performance.now();
-    updateRunningUi(true);
+    updateRunningUi();
     setStatus(`匀速滚动 · ${state.speed} 字/分钟`, 'running');
     requestWakeLock();
     animationFrame = requestAnimationFrame(autoTick);
@@ -554,7 +639,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       await refreshMicrophones();
       isRunning = true;
       aiRunId += 1;
-      updateRunningUi(true);
+      updateRunningUi();
       setStatus('AI 正在聆听', 'running');
       elements.transcriptPill.classList.remove('hidden');
       elements.transcriptText.textContent = '正在聆听…';
@@ -815,14 +900,16 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   function stopRunning(status = '已暂停') {
     if (!isRunning && !mediaStream) return;
     isRunning = false;
+    countdownActive = false;
     cancelAnimationFrame(animationFrame);
+    cancelAnimationFrame(countdownTimer);
     aiRunId += 1;
     clearTimeout(segmentTimer);
     if (mediaRecorder?.state === 'recording') {
       try { mediaRecorder.stop(); } catch { /* no-op */ }
     }
     window.setTimeout(stopMediaTracks, 80);
-    updateRunningUi(false);
+    updateRunningUi();
     setStatus(status);
     elements.aiOrb.classList.remove('listening');
     if (state.mode === 'ai') {
@@ -868,6 +955,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   }
 
   function openScriptEditor() {
+    if (countdownActive) cancelCountdown('编辑讲稿');
     if (isRunning) stopRunning('编辑讲稿');
     elements.titleInput.value = state.title;
     elements.scriptInput.value = state.script;
@@ -877,6 +965,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   }
 
   function openSettings() {
+    if (countdownActive) cancelCountdown('正在配置 AI');
     if (isRunning && state.mode === 'ai') {
       stopRunning('正在配置 AI');
       showToast('AI 跟读已暂停，保存设置后可继续。');
@@ -887,6 +976,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.fuzzyRange.value = String(state.settings.fuzzy);
     elements.chunkRange.value = String(state.settings.chunkSeconds);
     elements.lineSpacingRange.value = String(state.settings.lineSpacing);
+    elements.countdownRange.value = String(state.settings.countdownSeconds);
     elements.microphoneSelect.value = state.settings.microphoneId;
     syncSettingsOutputs();
     elements.settingsDialog.showModal();
@@ -932,6 +1022,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     state.settings.fuzzy = Number(elements.fuzzyRange.value);
     state.settings.chunkSeconds = Number(elements.chunkRange.value);
     state.settings.lineSpacing = Number(elements.lineSpacingRange.value);
+    state.settings.countdownSeconds = Number(elements.countdownRange.value);
     state.settings.microphoneId = elements.microphoneSelect.value;
     persistApiKey();
     persistStateSoon();
@@ -947,7 +1038,8 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
     elements.fuzzyValue.textContent = `${elements.fuzzyRange.value}%`;
     elements.chunkValue.textContent = `${elements.chunkRange.value} 秒`;
     elements.lineSpacingValue.textContent = elements.lineSpacingRange.value;
-    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange, elements.lineSpacingRange].forEach(updateRange);
+    elements.countdownValue.textContent = `${elements.countdownRange.value} 秒`;
+    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange, elements.lineSpacingRange, elements.countdownRange].forEach(updateRange);
   }
 
   function applyLineSpacing() {
@@ -955,6 +1047,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
   }
 
   function resetToStart() {
+    if (countdownActive) cancelCountdown('已重置');
     if (isRunning) stopRunning('已重置');
     setProgress(0, { scroll: true, behavior: 'smooth' });
     showToast('已回到讲稿开头。');
@@ -993,8 +1086,10 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       persistStateSoon();
     });
     elements.playButton.addEventListener('click', toggleRunning);
+    elements.pauseButton.addEventListener('click', toggleRunning);
     elements.resetButton.addEventListener('click', resetToStart);
     elements.fullscreenButton.addEventListener('click', toggleFullscreen);
+    elements.exitFullscreenButton.addEventListener('click', toggleFullscreen);
     $('#settingsButton').addEventListener('click', openSettings);
     $('#openAiSettings').addEventListener('click', openSettings);
     $('#mobileSettingsButton').addEventListener('click', openSettings);
@@ -1013,7 +1108,7 @@ FlowCue 想做的事情很简单：让讲稿跟着人走。
       elements.apiKeyInput.type = showing ? 'password' : 'text';
       elements.revealKeyButton.textContent = showing ? '显示' : '隐藏';
     });
-    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange, elements.lineSpacingRange].forEach((range) => {
+    [elements.lookaheadRange, elements.fuzzyRange, elements.chunkRange, elements.lineSpacingRange, elements.countdownRange].forEach((range) => {
       range.addEventListener('input', syncSettingsOutputs);
     });
     closeOnBackdrop(elements.scriptDialog);
